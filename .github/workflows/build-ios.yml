@@ -2,15 +2,15 @@ name: Build unsigned IPA for HuangGuo
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # 手动触发打包
+  workflow_dispatch:
 
 jobs:
   build_ios:
-    runs-on: macos-latest
+    runs-on: macos-26
     timeout-minutes: 40
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -19,22 +19,43 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Flutter pre-cache ios
-        run: flutter precache --ios
+      - name: Clean old build
+        run: flutter clean
 
-      - name: Pub get
-        run: flutter pub get
+      - name: Flutter doctor
+        run: flutter doctor -v
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - name: Install pods
         run: |
+          set -e
+          flutter pub get
           cd ios
           pod install --repo-update
 
-      - name: Build IPA（不签名 --no-codesign）
-        run: flutter build ipa --release --no-codesign --build-name=1.0.0 --build-number=1
+      - name: Build ios (只编译，不导出ipa)
+        run: |
+          set -e
+          flutter build ios --release --no-codesign --build-name=1.0.0 --build-number=1
 
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
+      - name: Find Runner.app & make Payload ipa
+        run: |
+          set -e
+          APP_PATH=$(find build/ios -name "Runner.app" -type d | head -1)
+          echo "Found app: $APP_PATH"
+          mkdir -p build/ios/Payload
+          cp -R "$APP_PATH" build/ios/Payload/
+          cd build/ios
+          zip -q -r huangguo-unsigned.ipa Payload
+          rm -rf Payload
+          ls -la
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v5
         with:
           name: huangguo-unsigned-ipa
-          path: build/ios/ipa/*.ipa
+          path: build/ios/huangguo-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
