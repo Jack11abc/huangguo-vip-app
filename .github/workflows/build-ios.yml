@@ -1,4 +1,5 @@
 name: Build unsigned IPA for HuangGuo
+
 on:
   push:
     branches: [ main ]
@@ -22,35 +23,79 @@ jobs:
       - name: Clean old build
         run: flutter clean
 
-      - name: Flutter doctor
-        run: flutter doctor -v
-
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Ensure Podfile exists (fallback)
+        run: |
+          set -e
+          if [ ! -f ios/Podfile ]; then
+            echo "Podfile missing, writing default..."
+            cat > ios/Podfile <<'PODFILE_EOF'
+platform :ios, '16.0'
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+project 'Runner', { 'Debug' => :debug, 'Profile' => :release, 'Release' => :release }
+def flutter_root
+  p = File.expand_path(File.join('..','Flutter','Generated.xcconfig'), __FILE__)
+  File.foreach(p) do |line|
+    m = line.match(/FLUTTER_ROOT\=(.*)/)
+    return m[1].strip if m
+  end
+  raise "FLUTTER_ROOT not found"
+end
+require File.expand_path(File.join('packages','flutter_tools','bin','podhelper'), flutter_root)
+flutter_ios_podfile_setup
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' { inherit! :search_paths }
+end
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |c|
+      c.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+      c.build_settings['ENABLE_BITCODE'] = 'NO'
+    end
+  end
+end
+PODFILE_EOF
+          fi
+          echo "=== Podfile head ==="
+          head -5 ios/Podfile
 
       - name: Install pods
         run: |
           set -e
-          flutter pub get
           cd ios
           pod install --repo-update
 
-      - name: Build ios (只编译，不导出ipa)
+      - name: Build ios (no codesign)
         run: |
           set -e
-          flutter build ios --release --no-codesign --build-name=1.0.0 --build-number=1
+          flutter build ios --release --no-codesign \
+            --build-name=1.0.0 --build-number=1
 
-      - name: Find Runner.app & make Payload ipa
+      - name: Package Runner.app into Payload/ipa
         run: |
           set -e
           APP_PATH=$(find build/ios -name "Runner.app" -type d | head -1)
-          echo "Found app: $APP_PATH"
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::Runner.app not found"
+            find build/ios -maxdepth 4 -type d
+            exit 1
+          fi
+          echo "Found: $APP_PATH"
           mkdir -p build/ios/Payload
           cp -R "$APP_PATH" build/ios/Payload/
           cd build/ios
           zip -q -r huangguo-unsigned.ipa Payload
           rm -rf Payload
-          ls -la
+          ls -la huangguo-unsigned.ipa
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v5
